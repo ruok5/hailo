@@ -19,6 +19,16 @@ has repeat_limit => (
     }
 );
 
+# Minimum token count required for a token to be considered as a pivot.
+# Tokens seen fewer than this many times are excluded. Lower values admit
+# rarer tokens (more surprising pivots); higher values restrict to common
+# tokens (more predictable replies). Default 2 matches historical behavior.
+has rareness => (
+    isa     => Int,
+    is      => 'rw',
+    default => 2,
+);
+
 sub BUILD {
     my ($self) = @_;
 
@@ -31,6 +41,10 @@ sub BUILD {
     while (my ($k, $v) = each %$sth) {
         $self->{"_sth_$k"} = $v;
     }
+
+    my %args = %{ $self->arguments || {} };
+    $self->rareness($args{rareness})         if defined $args{rareness};
+    $self->repeat_limit($args{repeat_limit}) if defined $args{repeat_limit};
 
     return;
 }
@@ -51,7 +65,7 @@ sub reply {
     my @key_ids = keys %$token_cache;
 
     # sort the rest by rareness
-    @key_ids = $self->_find_rare_tokens(\@key_ids, 2);
+    @key_ids = $self->_find_rare_tokens(\@key_ids, $self->rareness);
 
     # get the middle expression
     my $pivot_token_id = shift @key_ids;
@@ -437,6 +451,29 @@ It generates the reply in one go, while favoring some of the tokens in the
 input, and returns it. It is fast and the replies are decent, but you can
 get better replies (at the cost of speed) with the
 L<Scored|Hailo::Engine::Scored> engine.
+
+=head1 ARGUMENTS
+
+The engine accepts the following arguments via L<Hailo/engine_args> (or
+C<--engine-args> on the command line, as a JSON-like hash):
+
+=over
+
+=item C<rareness>
+
+Integer. Minimum number of times a token must appear in the brain for it
+to be usable as a reply pivot. Defaults to C<2>, which excludes tokens
+seen only once (typically typos or hapax legomena). Setting this to C<1>
+admits every token and tends to produce more surprising replies. Higher
+values (C<5>+) restrict pivot selection to common tokens and produce
+more predictable replies. Does not require retraining.
+
+=item C<repeat_limit>
+
+Integer. Soft cap on how many tokens the forward/backward walk will emit
+before terminating. Defaults to C<min(order * 10, 50)>.
+
+=back
 
 =head1 AUTHORS
 
