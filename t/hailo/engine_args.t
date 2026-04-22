@@ -1,7 +1,7 @@
 use v5.10.0;
 use strict;
 use warnings;
-use Test::More tests => 7;
+use Test::More tests => 11;
 use Hailo;
 
 $SIG{__WARN__} = sub {
@@ -58,4 +58,47 @@ $SIG{__WARN__} = sub {
     $h->learn("hello there good sirs");
     my $reply = $h->reply("hello");
     ok( defined $reply && length $reply, "reply defined even with rareness=999" );
+}
+
+# The Scored engine inherits rareness from Default and honors it when
+# filtering input-token pivot candidates.
+{
+    my $h = Hailo->new(
+        engine_class => 'Scored',
+        engine_args  => { rareness => 1, iterations => 5 },
+    );
+    $h->learn("hello there good sirs");
+    is( $h->_engine->rareness, 1, "Scored engine honors rareness arg" );
+}
+
+{
+    my $h = Hailo->new(
+        engine_class => 'Scored',
+        engine_args  => { iterations => 5 },
+    );
+    $h->learn("hello there good sirs");
+    is( $h->_engine->rareness, 2, "Scored engine inherits rareness default" );
+}
+
+# Smoke test: Scored produces a reply with rareness=1 on a tiny brain.
+{
+    my $h = Hailo->new(
+        engine_class => 'Scored',
+        engine_args  => { rareness => 1, iterations => 5 },
+    );
+    $h->learn("hello there good sirs");
+    my $reply = $h->reply("hello");
+    ok( defined $reply && length $reply, "Scored reply defined with rareness=1" );
+}
+
+# Smoke test: Scored still returns something when rareness filters every
+# candidate (fallback to random expression via _generate_reply).
+{
+    my $h = Hailo->new(
+        engine_class => 'Scored',
+        engine_args  => { rareness => 999, iterations => 5 },
+    );
+    $h->learn("hello there good sirs");
+    my $reply = $h->reply("hello");
+    ok( defined $reply && length $reply, "Scored reply defined with rareness=999" );
 }
