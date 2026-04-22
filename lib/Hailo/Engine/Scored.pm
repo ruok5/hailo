@@ -35,6 +35,14 @@ sub reply {
         } keys %$token_cache;
     }
 
+    # Apply the rareness floor inherited from Default: drop candidates
+    # whose brain-wide count is below it. If this empties the candidate
+    # list, _generate_reply falls back to a random expression.
+    if (@token_counts) {
+        my $min = $self->rareness;
+        @token_counts = grep { $_->[1] >= $min } @token_counts;
+    }
+
     my $token_probs = $self->_get_pivot_probabilites(\@token_counts);
     my @started = gettimeofday();
     my $iterations = 0;
@@ -260,6 +268,18 @@ best one.
 
 You can not specify both C<iterations> and C<interval> at the same time. If
 neither is specified, a default C<interval> of 0.5 seconds will be used.
+
+=head3 C<rareness>
+
+Inherited from L<Hailo::Engine::Default|Hailo::Engine::Default>. Acts as a
+minimum occurrence count filter over the input tokens before the pivot
+probability distribution is computed: candidates whose brain-wide count
+is below this threshold are dropped. If every candidate is filtered out,
+the engine falls back to selecting a random expression.
+
+=head3 C<repeat_limit>
+
+Inherited from L<Hailo::Engine::Default|Hailo::Engine::Default>.
 
 =head1 AUTHORS
 

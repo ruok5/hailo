@@ -139,9 +139,12 @@ hailo --brain PATH \
   exclusive with `interval`).
 
 **Trade-off:** ~10× CPU per reply. Quality improvement is real for
-well-trained brains. The Scored engine does *not* currently honor the
-`rareness` knob (it uses its own pivot probability distribution); if
-you want the `rareness` effect, stay on the `Default` engine.
+well-trained brains. The Scored engine honors the `rareness` knob too:
+it applies the minimum-count filter to the input-token pivot candidates
+before computing its own probability distribution over them. If the
+filter empties the candidate list, Scored falls back to selecting a
+random expression, matching the behavior you'd get from
+`--random-reply`.
 
 ---
 
