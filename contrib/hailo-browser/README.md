@@ -38,14 +38,23 @@ Tabs (switch with `1`–`5`):
 1. **Info** — rows from the `info` table (markov order, tokenizer class, …).
 2. **Stats** — counts of tokens, expressions, prev/next links; top-10 tokens.
 3. **Tokens** — table of tokens sorted by count; `/` to filter by substring.
+   Pressing Enter on a row drills into Expressions, showing only n-grams that
+   reference that exact token id (not a substring match).
 4. **Expressions** — table of n-grams with next/prev link counts and the
-   reconstructed text; `/` to filter by any contained token.
+   reconstructed text. Filter semantics:
+   - one word → substring match against any slot
+   - multiple words → positional phrase match (a consecutive window of slots
+     must match each word in order, substring per word)
+   - longer than the brain's order → no results
+   Typing in the filter clears any active token drill-down.
 5. **Chain walk** — the main attraction. Select an expression in tab 4 and
-   press Enter: the walk tab opens a tree rooted at that expression, children
-   are the possible next tokens with their counts and probabilities. Expand a
-   child to slide the window forward and see what can follow *that*
-   expression. Dead-end tokens (no matching expression on the other side) are
-   marked.
+   press Enter: the walk tab opens a tree rooted at that expression with two
+   subtrees, `→ forward` (children are `next_token` candidates) and
+   `← backward` (children are `prev_token` candidates). Each child shows the
+   token, its count, and its probability. Expanding a child slides the n-gram
+   window in that direction and reveals the next level of the chain. Children
+   that hit a sentence boundary are tagged `sentence start` / `sentence end`;
+   genuinely unreachable windows are tagged `dead end`.
 
 ## Keys
 

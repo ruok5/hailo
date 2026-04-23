@@ -236,6 +236,37 @@ class BrainDB:
         ).fetchall()
         return [(Token(r[0], r[1], r[2], r[3]), int(r[4])) for r in rows]
 
+    def expressions_with_token_id(
+        self, token_id: int, limit: int = 500
+    ) -> list[tuple[int, list[Token], int, int]]:
+        """Return expressions that reference exactly this token id in any slot."""
+        cols_sel = ", ".join(f"e.{c}" for c in self.token_cols)
+        ors = " OR ".join(f"e.{c} = ?" for c in self.token_cols)
+        sql = (
+            f"SELECT e.id, {cols_sel}, "
+            "(SELECT COUNT(*) FROM next_token WHERE expr_id = e.id) AS n_next, "
+            "(SELECT COUNT(*) FROM prev_token WHERE expr_id = e.id) AS n_prev "
+            f"FROM expr e WHERE {ors} ORDER BY e.id LIMIT ?"
+        )
+        params: list[Any] = [token_id] * self.order + [limit]
+        out: list[tuple[int, list[Token], int, int]] = []
+        for row in self.conn.execute(sql, params).fetchall():
+            expr_id = int(row[0])
+            token_ids = [int(x) for x in row[1 : 1 + self.order]]
+            n_next = int(row[1 + self.order])
+            n_prev = int(row[2 + self.order])
+            tokens: list[Token] = []
+            ok = True
+            for tid in token_ids:
+                t = self.token(tid)
+                if t is None:
+                    ok = False
+                    break
+                tokens.append(t)
+            if ok:
+                out.append((expr_id, tokens, n_next, n_prev))
+        return out
+
 
 def token_display(tok: Token) -> str:
     return tok.text if tok.text else "«boundary»"
@@ -293,6 +324,10 @@ class HailoBrowser(App):
     def __init__(self, db: BrainDB) -> None:
         super().__init__()
         self.db = db
+        # If set, the Expressions tab shows only expressions that reference
+        # this exact token id (a drill-down from the Tokens tab). Cleared the
+        # moment the user types into the Expressions filter.
+        self._drill_token_id: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -389,9 +424,17 @@ class HailoBrowser(App):
     def _reload_exprs(self, filter_text: str = "") -> None:
         tbl = self.query_one("#exprs-table", DataTable)
         tbl.clear()
-        for expr_id, tokens, n_next, n_prev in self.db.expressions(
-            filter_text=filter_text, limit=500
-        ):
+        if self._drill_token_id is not None:
+            rows = self.db.expressions_with_token_id(self._drill_token_id, limit=500)
+            tok = self.db.token(self._drill_token_id)
+            word = token_display(tok) if tok else f"#{self._drill_token_id}"
+            tbl.border_title = f"expressions containing token «{word}»"
+        else:
+            rows = self.db.expressions(filter_text=filter_text, limit=500)
+            tbl.border_title = (
+                f"filter: {filter_text}" if filter_text else "all expressions"
+            )
+        for expr_id, tokens, n_next, n_prev in rows:
             tbl.add_row(
                 str(expr_id),
                 str(n_next),
@@ -407,7 +450,9 @@ class HailoBrowser(App):
             return
         tree = self.query_one("#walk-tree", Tree)
         tree.reset(f"[{expr_id}] {render_ngram(tokens)}")
-        tree.root.data = {"expr_id": expr_id, "tokens": tokens}
+        # direction=None marks the root; its children are the two direction
+        # headers (forward / backward) that seed real chain walking below.
+        tree.root.data = {"expr_id": expr_id, "tokens": tokens, "direction": None}
         self._populate_children(tree.root)
         tree.root.expand()
         self.query_one("#tabs", TabbedContent).active = "walk"
@@ -418,22 +463,57 @@ class HailoBrowser(App):
             return
         expr_id: int = node.data["expr_id"]
         tokens: list[Token] = node.data["tokens"]
-        nexts = self.db.next_tokens(expr_id)
-        total = sum(c for _, c in nexts)
-        if total == 0:
-            node.add_leaf("(no outgoing links)")
+        direction = node.data.get("direction")
+
+        if direction is None:
+            # Root node: seed the two direction subtrees.
+            n_next = len(self.db.next_tokens(expr_id))
+            n_prev = len(self.db.prev_tokens(expr_id))
+            node.add(
+                f"→ forward  ({n_next} next token{'s' if n_next != 1 else ''})",
+                data={"expr_id": expr_id, "tokens": tokens, "direction": "next"},
+                allow_expand=n_next > 0,
+            )
+            node.add(
+                f"← backward  ({n_prev} prev token{'s' if n_prev != 1 else ''})",
+                data={"expr_id": expr_id, "tokens": tokens, "direction": "prev"},
+                allow_expand=n_prev > 0,
+            )
             return
-        for tok, count in nexts:
+
+        if direction == "next":
+            links = self.db.next_tokens(expr_id)
+        else:
+            links = self.db.prev_tokens(expr_id)
+        total = sum(c for _, c in links)
+        if total == 0:
+            node.add_leaf("(no links this direction)")
+            return
+        for tok, count in links:
             prob = count / total * 100
-            new_tokens = tokens[1:] + [tok]
+            if direction == "next":
+                new_tokens = tokens[1:] + [tok]  # slide window right
+            else:
+                new_tokens = [tok] + tokens[:-1]  # slide window left
             new_expr_id = self.db.expr_by_token_ids([t.id for t in new_tokens])
             label = f"[{count:>4}/{total}  {prob:5.1f}%]  {token_display(tok)}"
             if new_expr_id is None:
-                node.add_leaf(f"{label}   (dead end)")
+                # Boundary tokens (empty text) mark sentence start/end; any
+                # other unmatched window is an honest dead end (rare but
+                # possible if the brain was pruned).
+                if not tok.text:
+                    tag = "sentence start" if direction == "prev" else "sentence end"
+                else:
+                    tag = "dead end"
+                node.add_leaf(f"{label}   ({tag})")
             else:
                 node.add(
                     label,
-                    data={"expr_id": new_expr_id, "tokens": new_tokens},
+                    data={
+                        "expr_id": new_expr_id,
+                        "tokens": new_tokens,
+                        "direction": direction,
+                    },
                     allow_expand=True,
                 )
 
@@ -441,19 +521,33 @@ class HailoBrowser(App):
         if event.input.id == "tokens-filter":
             self._reload_tokens(event.value.strip())
         elif event.input.id == "exprs-filter":
+            # Typing a text filter always supersedes a token drill-down.
+            self._drill_token_id = None
             self._reload_exprs(event.value.strip())
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id != "exprs-table":
-            return
         raw = event.row_key.value
         if raw is None:
             return
         try:
-            expr_id = int(raw)
+            row_id = int(raw)
         except ValueError:
             return
-        self._start_walk(expr_id)
+        if event.data_table.id == "exprs-table":
+            self._start_walk(row_id)
+        elif event.data_table.id == "tokens-table":
+            self._drill_into_token(row_id)
+
+    def _drill_into_token(self, token_id: int) -> None:
+        self._drill_token_id = token_id
+        # Mirror the active token into the filter input for visibility; Enter
+        # in that input clears the drill and switches to text-filter mode.
+        tok = self.db.token(token_id)
+        if tok is not None:
+            self.query_one("#exprs-filter", Input).value = tok.text
+        self._reload_exprs()
+        self.query_one("#tabs", TabbedContent).active = "exprs"
+        self.query_one("#exprs-table", DataTable).focus()
 
     def on_tree_node_expanded(self, event: Tree.NodeExpanded) -> None:
         self._populate_children(event.node)
